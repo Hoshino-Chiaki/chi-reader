@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_path="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+  script_path="$(realpath "$script_path")"
+fi
+
+script_dir="$(cd -- "$(dirname -- "$script_path")" && pwd -P)"
+project_dir="$(cd -- "${script_dir}/.." && pwd -P)"
+config_dir="${MD_HUD_CONFIG_DIR:-${project_dir}/quickshell/markdown-hud}"
+shell_file="${config_dir}/shell.qml"
+docs_file="${config_dir}/docs.json"
+settings_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/chi_reader"
+chi_dir_file="${MD_HUD_DIR_FILE:-${settings_dir}/chi-dir}"
+default_chi_dir="/home/chiaki/Documents/chi"
+log_file="${XDG_STATE_HOME:-${HOME}/.local/state}/md-hud/quickshell.log"
+action_log_file="${XDG_STATE_HOME:-${HOME}/.local/state}/md-hud/actions.log"
+command_name="${1:-toggle}"
+
+expand_path() {
+  local path="${1:-}"
+
+  case "$path" in
+    "~")
+      printf '%s\n' "$HOME"
+      ;;
+    "~/"*)
+      printf '%s/%s\n' "$HOME" "${path#~/}"
+      ;;
+    *)
+      printf '%s\n' "$path"
+      ;;
+  esac
+}
+
+canonical_dir() {
+  local path=""
+
+  path="$(expand_path "$1")"
+  if [[ ! -d "$path" ]]; then
+    printf 'md-hud: .chi directory does not exist: %s\n' "$path" >&2
+    return 1
+  fi
+
+  cd -- "$path" && pwd -P
+}
+
+load_chi_dir() {
+  local configured=""
+
+  if [[ -n "${CHI_HUD_DIR:-}" ]]; then
+    canonical_dir "$CHI_HUD_DIR"
+    return
+  fi
+
+  if [[ -r "$chi_dir_file" ]]; then
+    IFS= read -r configured < "$chi_dir_file" || true
+    if [[ -n "$configured" ]]; then
+      if canonical_dir "$configured"; then
+        return
+      fi
+      printf 'md-hud: falling back to default .chi directory\n' >&2
+    fi
+  fi
+
+  canonical_dir "$default_chi_dir"
+}
+
+chi_dir="$(load_chi_dir)"
+
+log_action() {
+  local message="$1"
+
+  # Temporarily disabled. For bug debugging, remove the next line to restore
+  # action logging to "$action_log_file".
+  return 0
+
+  mkdir -p "$(dirname "$action_log_file")"
+  printf '[%s] %s\n' "$(date '+%F %T')" "$message" >> "$action_log_file"
+}
+
+run_ipc() {
+  local output=""
+  local status=0
+
+  set +e
+  output="$(qs_ipc "$@" 2>&1)"
+  status=$?
+  set -e
+
+  log_action "$command_name status=$status output=${output//$'\n'/ | }"
+  if [[ -n "$output" ]]; then
+    printf '%s\n' "$output"
+  fi
+  return "$status"
+}
+
+generate_document_index() {
+  local tmp_file=""
+
+  mkdir -p "$config_dir"
+  tmp_file="$(mktemp "${docs_file}.tmp.XXXXXX")"
+
+  if [[ -d "$chi_dir" ]]; then
+    find "$chi_dir" -maxdepth 1 -type f \
+      -iname '*.chi' \
+      -print \
+      | sort \
+      | jq -Rn --arg root "$chi_dir" '
+          [inputs | select(length > 0) | {
+            title: (split("/")[-1] | sub("\\.[^.]+$"; "")),
+            path: .
+          }] | {root: $root, documents: .}
+        ' > "$tmp_file"
+  else
+    jq -n --arg root "$chi_dir" '{root: $root, documents: []}' > "$tmp_file"
+  fi
+
+  chmod 0644 "$tmp_file"
+  mv -f -- "$tmp_file" "$docs_file"
+}
+
+print_chi_dir() {
+  printf '%s\n' "$chi_dir"
+}
+
+set_chi_dir() {
+  local next_dir=""
+
+  if [[ -z "${1:-}" ]]; then
+    printf 'md-hud: missing directory\n' >&2
+    return 2
+  fi
+
+  next_dir="$(canonical_dir "$1")"
+  mkdir -p "$(dirname "$chi_dir_file")"
+  printf '%s\n' "$next_dir" > "$chi_dir_file"
+  chi_dir="$next_dir"
+  generate_document_index
+  ensure_shell
+  run_ipc call mdhud reload
+  printf 'md-hud: .chi directory set to %s\n' "$chi_dir"
+}
+
+reset_chi_dir() {
+  if [[ -e "$chi_dir_file" ]]; then
+    rm -f -- "$chi_dir_file"
+  fi
+  chi_dir="$(canonical_dir "$default_chi_dir")"
+  generate_document_index
+  ensure_shell
+  run_ipc call mdhud reload
+  printf 'md-hud: .chi directory reset to %s\n' "$chi_dir"
+}
+
+list_instance_ids() {
+  quickshell list --all 2>/dev/null | awk -v path="$shell_file" '
+    /^Instance / {
+      id = $2
+      sub(/:$/, "", id)
+      next
+    }
+
+    /^[[:space:]]*Config path: / {
+      config_path = $0
+      sub(/^[[:space:]]*Config path: /, "", config_path)
+      if (config_path == path) print id
+    }
+  '
+}
+
+primary_instance_id() {
+  local ids=()
+  local keep=""
+  local id=""
+  local last_index=0
+
+  readarray -t ids < <(list_instance_ids)
+  if ((${#ids[@]} == 0)); then
+    return 0
+  fi
+
+  last_index=$(( ${#ids[@]} - 1 ))
+  keep="${ids[$last_index]}"
+
+  for id in "${ids[@]}"; do
+    if [[ "$id" != "$keep" ]]; then
+      quickshell kill --id "$id" >/dev/null 2>&1 || true
+    fi
+  done
+
+  printf '%s\n' "$keep"
+}
+
+qs_ipc() {
+  local id=""
+
+  id="$(primary_instance_id)"
+  if [[ -n "$id" ]]; then
+    qs ipc --id "$id" "$@"
+  else
+    qs ipc --path "$shell_file" --newest "$@"
+  fi
+}
+
+usage() {
+  printf 'usage: %s [toggle|show|hide|reload|status|scroll-up|scroll-down|metrics|dir [PATH]|dir-get|dir-reset]\n' "$0" >&2
+}
+
+ensure_shell() {
+  if qs_ipc show 2>/dev/null | grep -q '^target mdhud$'; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$log_file")"
+  CHI_HUD_WL_COPY="${CHI_HUD_WL_COPY:-wl-copy}" \
+  CHI_HUD_SHELL="${CHI_HUD_SHELL:-sh}" \
+    quickshell --path "$shell_file" --no-duplicate --daemonize >>"$log_file" 2>&1 || true
+
+  for _ in $(seq 1 30); do
+    if qs_ipc show 2>/dev/null | grep -q '^target mdhud$'; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  printf 'md-hud: Quickshell IPC target "mdhud" did not appear. See %s\n' "$log_file" >&2
+  return 1
+}
+
+case "$command_name" in
+  dir)
+    if [[ -n "${2:-}" ]]; then
+      set_chi_dir "$2"
+    else
+      print_chi_dir
+    fi
+    ;;
+  dir-get)
+    print_chi_dir
+    ;;
+  dir-set)
+    set_chi_dir "${2:-}"
+    ;;
+  dir-reset)
+    reset_chi_dir
+    ;;
+  toggle|show|hide|reload)
+    generate_document_index
+    ensure_shell
+    if [[ "$command_name" == "show" ]]; then
+      run_ipc call mdhud open
+    else
+      run_ipc call mdhud "$command_name"
+    fi
+    ;;
+  status|scroll-up|scroll-down|metrics)
+    ensure_shell
+    if [[ "$command_name" == "scroll-up" ]]; then
+      run_ipc call mdhud scrollUp
+    elif [[ "$command_name" == "scroll-down" ]]; then
+      run_ipc call mdhud scrollDown
+    elif [[ "$command_name" == "metrics" ]]; then
+      run_ipc call mdhud metrics
+    else
+      run_ipc call mdhud "$command_name"
+    fi
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

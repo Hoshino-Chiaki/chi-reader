@@ -1,7 +1,33 @@
 # chi_reader Syntax v2
 ![1](./image/Screenshot%20from%202026-06-07%2010-46-10.png)
-![2](./image/Screenshot%20from%202026-06-07%2010-46-36.png)
-This is the final high-performance `.chi` format. Special syntax is line-based: markers must start at the beginning of a line.
+![2](./image/Screenshot%20from%202026-06-07%2010-46-36.pngs)
+
+##
+`chi_reader` is a transparent Quickshell HUD for reading `.chi` study notes on **Arch Linux + Niri**.
+
+It is designed for fast keyboard-driven note lookup while working in a Wayland desktop: open the HUD, choose a `.chi` file, choose a section, read compact command notes, and copy commands without leaving the current workspace.
+
+## Scope
+
+This project is intentionally scoped to:
+
+- Arch Linux
+- Niri Wayland compositor
+- Quickshell
+- User-local installation under `~/.config/chi_reader`
+
+Other Linux distributions, desktop environments, and compositors are not supported by this project unless you adapt the paths, keybindings, and Quickshell/Niri behavior yourself.
+
+## Features
+
+- Transparent HUD for `.chi` notes
+- File selector and section selector
+- Keyboard navigation
+- Fast scrolling
+- Copy buttons for code blocks and command rows
+- Persistent configurable `.chi` directory
+- Syntax blocks for code, command packs, rules, tables, and ASCII flows
+- No extra in-panel settings UI; configuration is done with `md-hud` commands
 
 ## Commands
 

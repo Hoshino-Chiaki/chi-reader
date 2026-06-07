@@ -1,6 +1,5 @@
 # chi_reader Syntax v2
-![1](./image/Screenshot%20from%202026-06-07%2010-46-10.png)
-![2](./image/Screenshot%20from%202026-06-07%2010-46-36.png)
+![1](./image/)
 This is the final high-performance `.chi` format. Special syntax is line-based: markers must start at the beginning of a line.
 
 ## Commands

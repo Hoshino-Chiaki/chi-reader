@@ -12,7 +12,9 @@ config_dir="${MD_HUD_CONFIG_DIR:-${project_dir}/quickshell/markdown-hud}"
 shell_file="${config_dir}/shell.qml"
 docs_file="${config_dir}/docs.json"
 settings_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/chi_reader"
+settings_file="${MD_HUD_SETTINGS_FILE:-${settings_dir}/config.json}"
 chi_dir_file="${MD_HUD_DIR_FILE:-${settings_dir}/chi-dir}"
+systemd_user_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
 default_chi_dir="/home/chiaki/Documents/chi"
 log_file="${XDG_STATE_HOME:-${HOME}/.local/state}/md-hud/quickshell.log"
 action_log_file="${XDG_STATE_HOME:-${HOME}/.local/state}/md-hud/actions.log"
@@ -46,6 +48,139 @@ canonical_dir() {
   cd -- "$path" && pwd -P
 }
 
+ensure_settings_file() {
+  local legacy_chi_dir=""
+  local initial_chi_dir="$default_chi_dir"
+  local tmp_file=""
+
+  mkdir -p "$settings_dir"
+
+  if [[ ! -r "$settings_file" ]]; then
+    if [[ -r "$chi_dir_file" ]]; then
+      IFS= read -r legacy_chi_dir < "$chi_dir_file" || true
+      if [[ -n "$legacy_chi_dir" ]] && [[ -d "$(expand_path "$legacy_chi_dir")" ]]; then
+        initial_chi_dir="$(canonical_dir "$legacy_chi_dir")"
+      fi
+    fi
+
+    umask 077
+    jq -n \
+      --arg chi_dir "$initial_chi_dir" \
+      '{
+        chi_dir: $chi_dir,
+        backup: {
+          host: "",
+          user: "",
+          port: 22,
+          identity_file: "~/.ssh/id_ed25519",
+          remote_command: "chi-backup-receive",
+          keep: 20,
+          time: "03:30"
+        },
+        restore: {
+          download_overwrite_once: "no",
+          remote_archive: "latest.tar.gz"
+        }
+      }' > "$settings_file"
+  fi
+
+  tmp_file="$(mktemp "${settings_file}.tmp.XXXXXX")"
+  if jq \
+    --arg chi_dir "$default_chi_dir" \
+    '.
+      | .chi_dir //= $chi_dir
+      | .backup //= {}
+      | .backup.host //= ""
+      | .backup.user //= ""
+      | .backup.port //= 22
+      | .backup.identity_file //= "~/.ssh/id_ed25519"
+      | .backup.remote_command //= "chi-backup-receive"
+      | .backup.keep //= 20
+      | .backup.time //= "03:30"
+      | .restore //= {}
+      | .restore.download_overwrite_once //= "no"
+      | .restore.remote_archive //= "latest.tar.gz"' \
+    "$settings_file" > "$tmp_file"; then
+    chmod 0600 "$tmp_file"
+    mv -f -- "$tmp_file" "$settings_file"
+  else
+    rm -f -- "$tmp_file"
+    printf 'md-hud: invalid config JSON: %s\n' "$settings_file" >&2
+    return 1
+  fi
+}
+
+config_get() {
+  local filter="$1"
+  local fallback="${2:-}"
+  local value=""
+
+  ensure_settings_file
+  value="$(jq -er "$filter // empty" "$settings_file" 2>/dev/null || true)"
+  if [[ -n "$value" ]]; then
+    printf '%s\n' "$value"
+  else
+    printf '%s\n' "$fallback"
+  fi
+}
+
+config_set_known_key() {
+  local key="$1"
+  local value="$2"
+  local tmp_file=""
+  local filter=""
+
+  ensure_settings_file
+  tmp_file="$(mktemp "${settings_file}.tmp.XXXXXX")"
+
+  case "$key" in
+    chi_dir)
+      filter='.chi_dir = $value'
+      ;;
+    backup.host)
+      filter='.backup.host = $value'
+      ;;
+    backup.user)
+      filter='.backup.user = $value'
+      ;;
+    backup.port)
+      filter='.backup.port = ($value | tonumber)'
+      ;;
+    backup.identity_file)
+      filter='.backup.identity_file = $value'
+      ;;
+    backup.remote_command)
+      filter='.backup.remote_command = $value'
+      ;;
+    backup.keep)
+      filter='.backup.keep = ($value | tonumber)'
+      ;;
+    backup.time)
+      filter='.backup.time = $value'
+      ;;
+    restore.download_overwrite_once)
+      filter='.restore.download_overwrite_once = $value'
+      ;;
+    restore.remote_archive)
+      filter='.restore.remote_archive = $value'
+      ;;
+    *)
+      printf 'md-hud: unsupported config key: %s\n' "$key" >&2
+      printf 'supported keys: chi_dir backup.host backup.user backup.port backup.identity_file backup.remote_command backup.keep backup.time restore.download_overwrite_once restore.remote_archive\n' >&2
+      rm -f -- "$tmp_file"
+      return 2
+      ;;
+  esac
+
+  if ! jq --arg value "$value" "$filter" "$settings_file" > "$tmp_file"; then
+    rm -f -- "$tmp_file"
+    return 1
+  fi
+
+  chmod 0600 "$tmp_file"
+  mv -f -- "$tmp_file" "$settings_file"
+}
+
 load_chi_dir() {
   local configured=""
 
@@ -54,14 +189,13 @@ load_chi_dir() {
     return
   fi
 
-  if [[ -r "$chi_dir_file" ]]; then
-    IFS= read -r configured < "$chi_dir_file" || true
-    if [[ -n "$configured" ]]; then
-      if canonical_dir "$configured"; then
-        return
-      fi
-      printf 'md-hud: falling back to default .chi directory\n' >&2
+  ensure_settings_file
+  configured="$(config_get '.chi_dir' '')"
+  if [[ -n "$configured" ]]; then
+    if canonical_dir "$configured"; then
+      return
     fi
+    printf 'md-hud: configured .chi directory is invalid, falling back to default\n' >&2
   fi
 
   canonical_dir "$default_chi_dir"
@@ -134,8 +268,7 @@ set_chi_dir() {
   fi
 
   next_dir="$(canonical_dir "$1")"
-  mkdir -p "$(dirname "$chi_dir_file")"
-  printf '%s\n' "$next_dir" > "$chi_dir_file"
+  config_set_known_key chi_dir "$next_dir"
   chi_dir="$next_dir"
   generate_document_index
   ensure_shell
@@ -144,14 +277,314 @@ set_chi_dir() {
 }
 
 reset_chi_dir() {
-  if [[ -e "$chi_dir_file" ]]; then
-    rm -f -- "$chi_dir_file"
-  fi
   chi_dir="$(canonical_dir "$default_chi_dir")"
+  config_set_known_key chi_dir "$chi_dir"
   generate_document_index
   ensure_shell
   run_ipc call mdhud reload
   printf 'md-hud: .chi directory reset to %s\n' "$chi_dir"
+}
+
+show_config() {
+  ensure_settings_file
+  jq '.' "$settings_file"
+}
+
+print_config_path() {
+  ensure_settings_file
+  printf '%s\n' "$settings_file"
+}
+
+set_config_key() {
+  local key="${1:-}"
+  local value="${2:-}"
+
+  if [[ -z "$key" || -z "$value" ]]; then
+    printf 'usage: %s config-set KEY VALUE\n' "$0" >&2
+    return 2
+  fi
+
+  if [[ "$key" == "chi_dir" ]]; then
+    set_chi_dir "$value"
+    return
+  fi
+
+  config_set_known_key "$key" "$value"
+  printf 'md-hud: config %s updated\n' "$key"
+}
+
+ssh_base_args() {
+  local port="$1"
+  local identity_file="$2"
+  local expanded_identity=""
+
+  printf '%s\n' "-F"
+  printf '%s\n' "/dev/null"
+  printf '%s\n' "-p"
+  printf '%s\n' "$port"
+  printf '%s\n' "-o"
+  printf '%s\n' "BatchMode=yes"
+  printf '%s\n' "-o"
+  printf '%s\n' "ConnectTimeout=8"
+
+  expanded_identity="$(expand_path "$identity_file")"
+  if [[ -n "$expanded_identity" && -r "$expanded_identity" ]]; then
+    printf '%s\n' "-i"
+    printf '%s\n' "$expanded_identity"
+  fi
+}
+
+validate_remote_command() {
+  local remote_command="$1"
+
+  if [[ ! "$remote_command" =~ ^[/A-Za-z0-9._-]+$ ]]; then
+    printf 'md-hud: backup.remote_command must be a command name or absolute path without spaces: %s\n' "$remote_command" >&2
+    return 1
+  fi
+}
+
+validate_remote_archive() {
+  local remote_archive="$1"
+
+  case "$remote_archive" in
+    latest|latest.tar.gz)
+      return 0
+      ;;
+  esac
+
+  if [[ ! "$remote_archive" =~ ^[A-Za-z0-9._-]+\.tar\.gz$ ]]; then
+    printf 'md-hud: restore.remote_archive must be latest.tar.gz or ARCHIVE.tar.gz without paths/spaces: %s\n' "$remote_archive" >&2
+    return 1
+  fi
+}
+
+validate_backup_time() {
+  local backup_time="$1"
+  local hour=""
+  local minute=""
+
+  if [[ ! "$backup_time" =~ ^[0-2][0-9]:[0-5][0-9]$ ]]; then
+    printf 'md-hud: backup.time must use HH:MM, for example 03:30\n' >&2
+    return 1
+  fi
+
+  hour="${backup_time%:*}"
+  minute="${backup_time#*:}"
+  if ((10#$hour > 23 || 10#$minute > 59)); then
+    printf 'md-hud: backup.time is outside 00:00-23:59: %s\n' "$backup_time" >&2
+    return 1
+  fi
+}
+
+notify_user() {
+  local title="$1"
+  local body="$2"
+
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "$title" "$body" >/dev/null 2>&1 || true
+  fi
+}
+
+prompt_confirm() {
+  local prompt="$1"
+  local expected="$2"
+  local answer=""
+
+  if [[ ! -t 0 ]]; then
+    printf 'md-hud: confirmation requires an interactive terminal\n' >&2
+    return 1
+  fi
+
+  printf '%s ' "$prompt" >&2
+  IFS= read -r answer
+  [[ "$answer" == "$expected" ]]
+}
+
+backup_target() {
+  local host=""
+  local user=""
+
+  host="$(config_get '.backup.host' '')"
+  user="$(config_get '.backup.user' '')"
+
+  if [[ -z "$host" ]]; then
+    printf 'md-hud: backup.host is empty. Set it with: md-hud config-set backup.host SERVER_IP\n' >&2
+    return 1
+  fi
+
+  if [[ -n "$user" ]]; then
+    printf '%s@%s\n' "$user" "$host"
+  else
+    printf '%s\n' "$host"
+  fi
+}
+
+backup_test() {
+  local port=""
+  local identity_file=""
+  local remote_command=""
+  local target=""
+  local args=()
+
+  port="$(config_get '.backup.port' '22')"
+  identity_file="$(config_get '.backup.identity_file' '')"
+  remote_command="$(config_get '.backup.remote_command' 'chi-backup-receive')"
+  validate_remote_command "$remote_command"
+  target="$(backup_target)"
+  readarray -t args < <(ssh_base_args "$port" "$identity_file")
+
+  ssh "${args[@]}" "$target" "command -v $remote_command >/dev/null"
+  printf 'md-hud: backup server is reachable and %s exists\n' "$remote_command"
+}
+
+upload_backup() {
+  local port=""
+  local identity_file=""
+  local remote_command=""
+  local keep=""
+  local target=""
+  local args=()
+  local message=""
+
+  port="$(config_get '.backup.port' '22')"
+  identity_file="$(config_get '.backup.identity_file' '')"
+  remote_command="$(config_get '.backup.remote_command' 'chi-backup-receive')"
+  keep="$(config_get '.backup.keep' '20')"
+  validate_remote_command "$remote_command"
+  if [[ ! "$keep" =~ ^[0-9]+$ ]]; then
+    printf 'md-hud: backup.keep must be a number\n' >&2
+    return 1
+  fi
+  target="$(backup_target)"
+  readarray -t args < <(ssh_base_args "$port" "$identity_file")
+
+  tar -C "$chi_dir" -czf - . \
+    | ssh "${args[@]}" "$target" "CHI_BACKUP_KEEP=$keep $remote_command"
+  message="backup uploaded from $chi_dir to $target"
+  printf 'md-hud: %s\n' "$message"
+  notify_user "chi_reader backup" "$message"
+}
+
+manual_backup() {
+  local restore_flag=""
+
+  restore_flag="$(config_get '.restore.download_overwrite_once' 'no')"
+  case "$restore_flag" in
+    yes|YES|true|TRUE|1)
+      restore_from_server_once || {
+        config_set_known_key restore.download_overwrite_once no
+        printf 'md-hud: restore flag reset to no\n' >&2
+        return 1
+      }
+      ;;
+    *)
+      if ! prompt_confirm "Upload backup from $chi_dir to server? Type yes:" "yes"; then
+        printf 'md-hud: backup cancelled\n' >&2
+        return 1
+      fi
+      upload_backup
+      ;;
+  esac
+}
+
+restore_from_server_once() {
+  local port=""
+  local identity_file=""
+  local remote_command=""
+  local remote_archive=""
+  local target=""
+  local args=()
+  local tmp_dir=""
+  local archive_file=""
+  local message=""
+
+  printf 'md-hud: DANGER: this will download a backup from the server and overwrite matching local files in %s\n' "$chi_dir" >&2
+  printf 'md-hud: extra local files are kept, but same-name files are replaced by the archive\n' >&2
+  if ! prompt_confirm "Type RESTORE to continue:" "RESTORE"; then
+    config_set_known_key restore.download_overwrite_once no
+    printf 'md-hud: restore cancelled; restore.download_overwrite_once reset to no\n' >&2
+    return 1
+  fi
+
+  port="$(config_get '.backup.port' '22')"
+  identity_file="$(config_get '.backup.identity_file' '')"
+  remote_command="$(config_get '.backup.remote_command' 'chi-backup-receive')"
+  remote_archive="$(config_get '.restore.remote_archive' 'latest.tar.gz')"
+  validate_remote_command "$remote_command"
+  validate_remote_archive "$remote_archive"
+  target="$(backup_target)"
+  readarray -t args < <(ssh_base_args "$port" "$identity_file")
+
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/md-hud-restore.XXXXXX")"
+  archive_file="${tmp_dir}/restore.tar.gz"
+
+  if [[ "$remote_archive" == "latest.tar.gz" ]]; then
+    ssh "${args[@]}" "$target" "$remote_command --latest" > "$archive_file"
+  else
+    ssh "${args[@]}" "$target" "$remote_command --archive $remote_archive" > "$archive_file"
+  fi
+
+  tar -tzf "$archive_file" >/dev/null
+  tar -C "$chi_dir" -xzf "$archive_file"
+  rm -rf -- "$tmp_dir"
+
+  config_set_known_key restore.download_overwrite_once no
+  generate_document_index
+  ensure_shell
+  run_ipc call mdhud reload
+
+  message="restore downloaded from $target and overwrite flag reset to no"
+  printf 'md-hud: %s\n' "$message"
+  notify_user "chi_reader restore" "$message"
+}
+
+backup_timer_install() {
+  local backup_time=""
+  local service_file="${systemd_user_dir}/md-hud-backup.service"
+  local timer_file="${systemd_user_dir}/md-hud-backup.timer"
+
+  backup_time="$(config_get '.backup.time' '03:30')"
+  validate_backup_time "$backup_time"
+
+  mkdir -p "$systemd_user_dir"
+  cat > "$service_file" <<EOF
+[Unit]
+Description=chi_reader automatic .chi backup
+
+[Service]
+Type=oneshot
+ExecStart=$script_path backup-auto
+EOF
+
+  cat > "$timer_file" <<EOF
+[Unit]
+Description=Run chi_reader automatic .chi backup daily
+
+[Timer]
+OnCalendar=*-*-* $backup_time:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now md-hud-backup.timer
+  printf 'md-hud: automatic backup timer enabled for %s every day\n' "$backup_time"
+}
+
+backup_timer_status() {
+  systemctl --user status md-hud-backup.timer --no-pager
+}
+
+backup_timer_remove() {
+  local service_file="${systemd_user_dir}/md-hud-backup.service"
+  local timer_file="${systemd_user_dir}/md-hud-backup.timer"
+
+  systemctl --user disable --now md-hud-backup.timer >/dev/null 2>&1 || true
+  rm -f -- "$service_file" "$timer_file"
+  systemctl --user daemon-reload
+  printf 'md-hud: automatic backup timer removed\n'
 }
 
 list_instance_ids() {
@@ -205,7 +638,7 @@ qs_ipc() {
 }
 
 usage() {
-  printf 'usage: %s [toggle|show|hide|reload|status|scroll-up|scroll-down|metrics|dir [PATH]|dir-get|dir-reset]\n' "$0" >&2
+  printf 'usage: %s [toggle|show|hide|reload|status|scroll-up|scroll-down|metrics|dir [PATH]|dir-get|dir-reset|config|config-path|config-set KEY VALUE|backup|backup-auto|backup-test|backup-timer-install|backup-timer-status|backup-timer-remove]\n' "$0" >&2
 }
 
 ensure_shell() {
@@ -230,6 +663,15 @@ ensure_shell() {
 }
 
 case "$command_name" in
+  config)
+    show_config
+    ;;
+  config-path)
+    print_config_path
+    ;;
+  config-set)
+    set_config_key "${2:-}" "${3:-}"
+    ;;
   dir)
     if [[ -n "${2:-}" ]]; then
       set_chi_dir "$2"
@@ -245,6 +687,24 @@ case "$command_name" in
     ;;
   dir-reset)
     reset_chi_dir
+    ;;
+  backup)
+    manual_backup
+    ;;
+  backup-auto)
+    upload_backup
+    ;;
+  backup-test)
+    backup_test
+    ;;
+  backup-timer-install)
+    backup_timer_install
+    ;;
+  backup-timer-status)
+    backup_timer_status
+    ;;
+  backup-timer-remove)
+    backup_timer_remove
     ;;
   toggle|show|hide|reload)
     generate_document_index

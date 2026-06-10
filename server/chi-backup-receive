@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_root="${CHI_BACKUP_ROOT:-${HOME}/chi_reader_backups}"
+backup_name="${CHI_BACKUP_NAME:-chi}"
+backup_keep="${CHI_BACKUP_KEEP:-20}"
+timestamp="$(date '+%Y%m%d-%H%M%S')"
+archive="${backup_root}/${backup_name}-${timestamp}.tar.gz"
+tmp_archive="${archive}.tmp.$$"
+mode="${1:-receive}"
+archive_name="${2:-}"
+
+send_archive() {
+  local name="$1"
+  local path=""
+
+  case "$name" in
+    latest|latest.tar.gz)
+      path="${backup_root}/latest.tar.gz"
+      ;;
+    *)
+      if [[ ! "$name" =~ ^[A-Za-z0-9._-]+\.tar\.gz$ ]]; then
+        printf 'chi-backup-receive: invalid archive name: %s\n' "$name" >&2
+        return 2
+      fi
+      path="${backup_root}/${name}"
+      ;;
+  esac
+
+  if [[ ! -r "$path" ]]; then
+    printf 'chi-backup-receive: archive not found: %s\n' "$path" >&2
+    return 1
+  fi
+
+  cat -- "$path"
+}
+
+list_archives() {
+  [[ -d "$backup_root" ]] || return 0
+  find "$backup_root" -maxdepth 1 -type f -name "${backup_name}-*.tar.gz" -printf '%f\n' | sort -r
+}
+
+case "$mode" in
+  --latest)
+    send_archive latest.tar.gz
+    exit
+    ;;
+  --archive)
+    if [[ -z "$archive_name" ]]; then
+      printf 'usage: chi-backup-receive --archive ARCHIVE.tar.gz\n' >&2
+      exit 2
+    fi
+    send_archive "$archive_name"
+    exit
+    ;;
+  --list)
+    list_archives
+    exit
+    ;;
+  receive)
+    ;;
+  *)
+    printf 'usage: chi-backup-receive [--latest|--archive ARCHIVE.tar.gz|--list]\n' >&2
+    exit 2
+    ;;
+esac
+
+case "$backup_keep" in
+  ''|*[!0-9]*)
+    backup_keep=20
+    ;;
+esac
+
+mkdir -p "$backup_root"
+umask 077
+
+cat > "$tmp_archive"
+tar -tzf "$tmp_archive" >/dev/null
+mv -f -- "$tmp_archive" "$archive"
+ln -sfn "$(basename "$archive")" "${backup_root}/latest.tar.gz"
+
+find "$backup_root" -maxdepth 1 -type f -name "${backup_name}-*.tar.gz" \
+  | sort -r \
+  | tail -n +"$((backup_keep + 1))" \
+  | xargs -r rm -f --
+
+printf 'chi-backup-receive: saved %s\n' "$archive"

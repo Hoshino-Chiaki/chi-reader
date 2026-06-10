@@ -1,0 +1,16 @@
+{
+  "chi_dir": "/home/chiaki/Documents/chi",
+  "backup": {
+    "host": "backup.example.com",
+    "user": "chiaki",
+    "port": 22,
+    "identity_file": "~/.ssh/id_ed25519",
+    "remote_command": "chi-backup-receive",
+    "keep": 20,
+    "time": "03:30"
+  },
+  "restore": {
+    "download_overwrite_once": "no",
+    "remote_archive": "latest.tar.gz"
+  }
+}

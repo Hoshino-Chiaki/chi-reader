@@ -1,4 +1,6 @@
 # chi_reader
+![photo1](image/Screenshot%20from%202026-06-07%2010-46-10.png)
+![photo2](image/Screenshot%20from%202026-06-07%2010-46-36.png)
 
 `chi_reader` is a transparent Quickshell HUD for reading `.chi` study notes on **Arch Linux + Niri**.
 

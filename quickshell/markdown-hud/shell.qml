@@ -575,8 +575,12 @@ Scope {
   }
 
   function estimateCodeHeight(block) {
-    const lines = String(block.code || "").split(/\r?\n/).length;
-    return Math.max(50, lines * 18 + (String(block.label || "").length > 0 ? 52 : 30));
+    const lines = String(block.code || "").split(/\r?\n/);
+    let wrappedLines = 0;
+    for (let i = 0; i < lines.length; i++) {
+      wrappedLines += estimateWrappedVisualLines(lines[i], 44);
+    }
+    return Math.max(50, wrappedLines * 18 + (String(block.label || "").length > 0 ? 52 : 30));
   }
 
   function estimateCodePackHeight(block) {
@@ -585,8 +589,16 @@ Scope {
   }
 
   function codePackRowsHeight(entries) {
-    const count = entries && entries.length !== undefined ? entries.length : 0;
-    return count * 54 + Math.max(0, count - 1) * 6;
+    const source = entries && entries.length !== undefined ? entries : [];
+    let height = 0;
+    for (let i = 0; i < source.length; i++) {
+      const label = String(source[i] && source[i].label || "");
+      const code = String(source[i] && source[i].code || "");
+      const codeLines = estimateWrappedVisualLines(code, 38);
+      height += Math.max(54, codeLines * 18 + (label.length > 0 ? 37 : 26));
+      if (i < source.length - 1) height += 6;
+    }
+    return height;
   }
 
   function codePackEntries(block) {
@@ -1151,7 +1163,7 @@ Scope {
               Loader {
                 width: readerColumn.width
                 height: modelData.type === "codep"
-                  ? root.estimateCodePackHeight(modelData)
+                  ? (item ? Math.max(item.height, item.implicitHeight || 0) : root.estimateCodePackHeight(modelData))
                   : modelData.type === "table"
                     ? root.tableBlockHeight(modelData, readerColumn.width)
                     : modelData.type === "flow"
@@ -1404,7 +1416,7 @@ Scope {
       Rectangle {
         id: codeCard
         readonly property bool hasLabel: String(block.label || "").length > 0
-        width: Math.min(parent.width - 18, Math.max(390, codeText.implicitWidth + 66))
+        width: Math.max(0, parent.width - 18)
         height: Math.max(50, codeText.implicitHeight + (hasLabel ? 52 : 30))
         x: Math.round((parent.width - width) / 2)
         y: 0
@@ -1447,7 +1459,7 @@ Scope {
 
         Text {
           id: codeText
-          width: parent.width - 66
+          width: Math.max(0, parent.width - 66)
           x: 55
           y: codeCard.hasLabel ? 34 : Math.round((codeCard.height - implicitHeight) / 2)
           text: block.code || ""
@@ -1456,7 +1468,7 @@ Scope {
           font.pixelSize: 13
           font.bold: true
           horizontalAlignment: Text.AlignLeft
-          wrapMode: Text.NoWrap
+          wrapMode: Text.WrapAtWordBoundaryOrAnywhere
           textFormat: Text.PlainText
           style: Text.Outline
           styleColor: "#d0000000"
@@ -1577,13 +1589,13 @@ Scope {
 
     Item {
       width: parent.width
-      height: root.estimateCodePackHeight(block)
+      height: codePackCard.height + 2
 
       Rectangle {
         id: codePackCard
         readonly property bool hasTitle: String(block.title || "").length > 0
-        width: parent.width - 18
-        height: parent.height - 8
+        width: Math.max(0, parent.width - 18)
+        height: codePackContent.implicitHeight + 18
         x: Math.round((parent.width - width) / 2)
         y: 0
         radius: 6
@@ -1620,7 +1632,7 @@ Scope {
           Column {
             id: codePackRows
             width: parent.width
-            height: root.codePackRowsHeight(root.codePackEntries(block))
+            height: implicitHeight
             spacing: 6
 
             Repeater {
@@ -1633,7 +1645,7 @@ Scope {
                 readonly property int copyId: blockIndex * 1000 + index + 1
                 readonly property bool copied: root.copiedBlockIndex === copyId
                 width: parent.width
-                height: 54
+                height: Math.max(54, packCodeText.implicitHeight + (rowLabel.length > 0 ? 37 : 26))
                 radius: 5
                 color: "#381a1f24"
                 border.width: 1
@@ -1696,17 +1708,18 @@ Scope {
                 }
 
                 Text {
+                  id: packCodeText
                   x: packCopyButton.x + packCopyButton.width + 8
                   y: codePackRow.rowLabel.length > 0 ? 25 : 17
-                  width: parent.width - x - 9
-                  height: 18
+                  width: Math.max(0, parent.width - x - 9)
+                  height: implicitHeight
                   text: codePackRow.copyText
                   color: "#ffffff"
                   font.family: "monospace"
                   font.pixelSize: 13
                   font.bold: true
                   verticalAlignment: Text.AlignTop
-                  elide: Text.ElideRight
+                  wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                   textFormat: Text.PlainText
                   style: Text.Outline
                   styleColor: "#d0000000"

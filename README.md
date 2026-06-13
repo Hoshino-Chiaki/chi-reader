@@ -340,13 +340,12 @@ md-hud backup-timer-remove
 
 ## `.chi` Syntax
 
-The full syntax reference is in `USAGE.md`.
-
 Short example:
 
 ```text
 ::sec 01.Linux
 ::sub 01.chmod
+::tri 01.权限查看
 
 ::code 查看权限
 ls -l
@@ -388,6 +387,7 @@ GitHub
 
 - Keep syntax markers at the start of a line.
 - End block syntax with a line containing only `::`.
+- Use `::sec` for level 1, `::sub` under `::sec`, and `::tri` under `::sub`.
 - Use `::codep` for many related one-line commands.
 - Use `::code` for multiline scripts.
 - Use `::flow` for ASCII diagrams and process charts.

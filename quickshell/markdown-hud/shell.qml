@@ -13,6 +13,7 @@ Scope {
   property int currentSectionIndex: -1
   property int selectedSectionIndex: 0
   property int sectionParentIndex: -1
+  property var sectionParentStack: []
   property bool pendingSectionSelector: false
   property var documents: []
   property var sections: []
@@ -37,8 +38,8 @@ Scope {
   readonly property string wlCopyCommand: Quickshell.env("CHI_HUD_WL_COPY") || "wl-copy"
   readonly property string shellCommand: Quickshell.env("CHI_HUD_SHELL") || "sh"
   readonly property int documentCount: documents.length
-  readonly property var displayedSections: sectionParentIndex >= 0 && sectionParentIndex < sectionRoots.length
-    ? (sectionRoots[sectionParentIndex].children || [])
+  readonly property var displayedSections: sectionParentStack.length > 0
+    ? (sectionParentStack[sectionParentStack.length - 1].children || [])
     : sectionRoots
   readonly property int sectionCount: displayedSections.length
   readonly property bool selectorMode: viewMode !== "reader"
@@ -51,13 +52,9 @@ Scope {
   readonly property string headerTitle: fileSelectorMode
     ? documentRoot
     : sectionSelectorMode
-      ? (sectionParentIndex >= 0 && sectionParentIndex < sectionRoots.length
-        ? currentTitle + " / " + sectionRoots[sectionParentIndex].title
-        : currentTitle)
+      ? sectionBreadcrumb("")
       : currentSection
-        ? (sectionParentIndex >= 0 && sectionParentIndex < sectionRoots.length
-          ? currentTitle + " / " + sectionRoots[sectionParentIndex].title + " / " + currentSection.title
-          : currentTitle + " / " + currentSection.title)
+        ? sectionBreadcrumb(currentSection.title)
         : currentTitle
   readonly property int selectorCount: fileSelectorMode ? documentCount : sectionCount
   readonly property int activeSelectedIndex: fileSelectorMode ? selectedIndex : selectedSectionIndex
@@ -70,6 +67,16 @@ Scope {
     const clean = String(path).replace(/\/+$/, "");
     const parts = clean.split("/");
     return parts.length > 0 ? parts[parts.length - 1] : clean;
+  }
+
+  function sectionBreadcrumb(extraTitle) {
+    const parts = [currentTitle];
+    for (let i = 0; i < sectionParentStack.length; i++) {
+      parts.push(String(sectionParentStack[i].title || ""));
+    }
+    const extra = String(extraTitle || "");
+    if (extra.length > 0) parts.push(extra);
+    return parts.join(" / ");
   }
 
   function resolvePath(path) {
@@ -137,6 +144,7 @@ Scope {
     sections = [];
     sectionRoots = [];
     sectionParentIndex = -1;
+    sectionParentStack = [];
     currentSectionIndex = -1;
     selectedSectionIndex = 0;
     panelVisible = true;
@@ -153,24 +161,16 @@ Scope {
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      let match = line.match(/^::sec\s+(.+?)\s*$/);
+      let match = line.match(/^::(sec|sub|tri)\s+(.+?)\s*$/);
       if (match) {
+        const markerType = String(match[1] || "");
+        const markerLevel = markerType === "sec" ? 1 : (markerType === "sub" ? 2 : 3);
         markers.push({
-          "title": String(match[1]).trim() || "Section " + String(markers.length + 1),
-          "child": false,
+          "title": String(match[2]).trim() || "Section " + String(markers.length + 1),
+          "level": markerLevel,
           "start": offset,
           "contentStart": offset + line.length + 1
         });
-      } else {
-        match = line.match(/^::sub\s+(.+?)\s*$/);
-        if (match) {
-          markers.push({
-            "title": String(match[1]).trim() || "Section " + String(markers.length + 1),
-            "child": true,
-            "start": offset,
-            "contentStart": offset + line.length + 1
-          });
-        }
       }
       offset += line.length + 1;
     }
@@ -179,6 +179,7 @@ Scope {
       sections = [];
       sectionRoots = [];
       sectionParentIndex = -1;
+      sectionParentStack = [];
       selectedSectionIndex = 0;
       currentSectionIndex = -1;
       return;
@@ -186,6 +187,7 @@ Scope {
 
     const nextRoots = [];
     let currentRoot = null;
+    let currentSub = null;
     let parseError = "";
 
     for (let i = 0; i < markers.length; i++) {
@@ -197,24 +199,42 @@ Scope {
         "children": []
       };
 
-      if (markers[i].child) {
+      if (markers[i].level === 1) {
+        currentRoot = node;
+        currentSub = null;
+        nextRoots.push(node);
+      } else if (markers[i].level === 2) {
         if (!currentRoot) {
-          parseError = "Subdirectory marker appears before any parent directory: " + markers[i].title;
+          parseError = "::sub appears before any ::sec: " + markers[i].title;
           break;
         }
         currentRoot.children.push(node);
+        currentSub = node;
       } else {
-        currentRoot = node;
-        nextRoots.push(node);
+        if (!currentSub) {
+          parseError = "::tri appears before any ::sub: " + markers[i].title;
+          break;
+        }
+        currentSub.children.push(node);
       }
     }
 
     if (parseError === "") {
-      for (let i = 0; i < nextRoots.length; i++) {
-        if ((nextRoots[i].children || []).length > 0 && String(nextRoots[i].text || "").trim() !== "") {
-          parseError = "目录结构错误: `" + nextRoots[i].title + "` 同时包含正文和子目录。一个目录下面要么只有子目录，要么直接就是正文。";
-          break;
+      function validateNode(node) {
+        if ((node.children || []).length > 0 && String(node.text || "").trim() !== "") {
+          return "目录结构错误: `" + node.title + "` 同时包含正文和子目录。一个目录下面要么只有子目录，要么直接就是正文。";
         }
+        const children = node.children || [];
+        for (let i = 0; i < children.length; i++) {
+          const childError = validateNode(children[i]);
+          if (childError !== "") return childError;
+        }
+        return "";
+      }
+
+      for (let i = 0; i < nextRoots.length; i++) {
+        parseError = validateNode(nextRoots[i]);
+        if (parseError !== "") break;
       }
     }
 
@@ -228,21 +248,20 @@ Scope {
       sections = [errorNode];
       sectionRoots = [errorNode];
       sectionParentIndex = -1;
+      sectionParentStack = [];
       selectedSectionIndex = 0;
       currentSectionIndex = 0;
       return;
     }
 
-    const previousParentIndex = sectionParentIndex;
     const previousCurrentIndex = currentSectionIndex;
 
     sectionRoots = nextRoots;
     sections = nextRoots;
-    sectionParentIndex = previousParentIndex >= 0 && previousParentIndex < sectionRoots.length ? previousParentIndex : -1;
+    sectionParentIndex = -1;
+    sectionParentStack = [];
 
-    const nextDisplayedSections = sectionParentIndex >= 0 && sectionParentIndex < sectionRoots.length
-      ? (sectionRoots[sectionParentIndex].children || [])
-      : sectionRoots;
+    const nextDisplayedSections = sectionRoots;
     const nextSectionCount = nextDisplayedSections.length;
 
     selectedSectionIndex = Math.max(0, Math.min(selectedSectionIndex, nextSectionCount - 1));
@@ -260,6 +279,7 @@ Scope {
     }
 
     sectionParentIndex = -1;
+    sectionParentStack = [];
     selectedSectionIndex = 0;
     viewMode = "sections";
     panelVisible = true;
@@ -272,7 +292,8 @@ Scope {
     const node = displayedSections[safeIndex];
 
     if (node && (node.children || []).length > 0) {
-      sectionParentIndex = sectionRoots.indexOf(node);
+      sectionParentIndex = -1;
+      sectionParentStack = sectionParentStack.concat([node]);
       selectedSectionIndex = 0;
       currentSectionIndex = -1;
       viewMode = "sections";
@@ -285,6 +306,14 @@ Scope {
     viewMode = "reader";
     panelVisible = true;
     flick.contentY = 0;
+  }
+
+  function popSectionParent() {
+    if (sectionParentStack.length <= 0) return false;
+    sectionParentStack = sectionParentStack.slice(0, sectionParentStack.length - 1);
+    selectedSectionIndex = 0;
+    currentSectionIndex = -1;
+    return true;
   }
 
   function activateSelection() {
@@ -575,11 +604,7 @@ Scope {
   }
 
   function estimateCodeHeight(block) {
-    const lines = String(block.code || "").split(/\r?\n/);
-    let wrappedLines = 0;
-    for (let i = 0; i < lines.length; i++) {
-      wrappedLines += estimateWrappedVisualLines(lines[i], 44);
-    }
+    const wrappedLines = codeVisualLineCount(block.code || "", 42);
     return Math.max(50, wrappedLines * 18 + (String(block.label || "").length > 0 ? 52 : 30));
   }
 
@@ -592,13 +617,26 @@ Scope {
     const source = entries && entries.length !== undefined ? entries : [];
     let height = 0;
     for (let i = 0; i < source.length; i++) {
-      const label = String(source[i] && source[i].label || "");
-      const code = String(source[i] && source[i].code || "");
-      const codeLines = estimateWrappedVisualLines(code, 38);
-      height += Math.max(54, codeLines * 18 + (label.length > 0 ? 37 : 26));
+      height += codePackRowHeight(source[i]);
       if (i < source.length - 1) height += 6;
     }
     return height;
+  }
+
+  function codeVisualLineCount(value, unitsPerLine) {
+    const lines = String(value || "").split(/\r?\n/);
+    let total = 0;
+    for (let i = 0; i < lines.length; i++) {
+      total += estimateWrappedVisualLines(lines[i], unitsPerLine);
+    }
+    return Math.max(1, total);
+  }
+
+  function codePackRowHeight(entry) {
+    const label = String(entry && entry.label || "");
+    const code = String(entry && entry.code || "");
+    const codeLines = codeVisualLineCount(code, 36);
+    return Math.max(54, codeLines * 18 + (label.length > 0 ? 39 : 28));
   }
 
   function codePackEntries(block) {
@@ -968,6 +1006,7 @@ Scope {
       sections = [];
       sectionRoots = [];
       sectionParentIndex = -1;
+      sectionParentStack = [];
       currentSectionIndex = -1;
       if (pendingSectionSelector) {
         pendingSectionSelector = false;
@@ -1347,9 +1386,8 @@ Scope {
 
       Keys.onPressed: event => {
         if (event.key === Qt.Key_Escape) {
-          if (root.sectionSelectorMode && root.sectionParentIndex >= 0) {
-            root.sectionParentIndex = -1;
-            root.selectedSectionIndex = 0;
+          if (root.sectionSelectorMode && root.sectionParentStack.length > 0) {
+            root.popSectionParent();
           } else {
             root.hidePanel();
           }
@@ -1366,9 +1404,8 @@ Scope {
           else flick.contentY = root.clampScrollY(flick.contentY - 42);
           event.accepted = true;
         } else if (event.key === Qt.Key_H || event.key === Qt.Key_Left) {
-          if (root.sectionSelectorMode && root.sectionParentIndex >= 0) {
-            root.sectionParentIndex = -1;
-            root.selectedSectionIndex = 0;
+          if (root.sectionSelectorMode && root.sectionParentStack.length > 0) {
+            root.popSectionParent();
           } else {
             root.nextDocument(-1);
           }
@@ -1417,7 +1454,7 @@ Scope {
         id: codeCard
         readonly property bool hasLabel: String(block.label || "").length > 0
         width: Math.max(0, parent.width - 18)
-        height: Math.max(50, codeText.implicitHeight + (hasLabel ? 52 : 30))
+        height: Math.max(50, root.estimateCodeHeight(block) - 2)
         x: Math.round((parent.width - width) / 2)
         y: 0
         radius: 6
@@ -1461,7 +1498,8 @@ Scope {
           id: codeText
           width: Math.max(0, parent.width - 66)
           x: 55
-          y: codeCard.hasLabel ? 34 : Math.round((codeCard.height - implicitHeight) / 2)
+          y: codeCard.hasLabel ? 34 : 15
+          height: Math.max(18, parent.height - y - 10)
           text: block.code || ""
           color: "#ffffff"
           font.family: "monospace"
@@ -1589,13 +1627,13 @@ Scope {
 
     Item {
       width: parent.width
-      height: codePackCard.height + 2
+      height: root.estimateCodePackHeight(block)
 
       Rectangle {
         id: codePackCard
         readonly property bool hasTitle: String(block.title || "").length > 0
         width: Math.max(0, parent.width - 18)
-        height: codePackContent.implicitHeight + 18
+        height: Math.max(50, parent.height - 2)
         x: Math.round((parent.width - width) / 2)
         y: 0
         radius: 6
@@ -1632,7 +1670,7 @@ Scope {
           Column {
             id: codePackRows
             width: parent.width
-            height: implicitHeight
+            height: root.codePackRowsHeight(root.codePackEntries(block))
             spacing: 6
 
             Repeater {
@@ -1645,7 +1683,7 @@ Scope {
                 readonly property int copyId: blockIndex * 1000 + index + 1
                 readonly property bool copied: root.copiedBlockIndex === copyId
                 width: parent.width
-                height: Math.max(54, packCodeText.implicitHeight + (rowLabel.length > 0 ? 37 : 26))
+                height: root.codePackRowHeight(modelData)
                 radius: 5
                 color: "#381a1f24"
                 border.width: 1
@@ -1712,7 +1750,7 @@ Scope {
                   x: packCopyButton.x + packCopyButton.width + 8
                   y: codePackRow.rowLabel.length > 0 ? 25 : 17
                   width: Math.max(0, parent.width - x - 9)
-                  height: implicitHeight
+                  height: Math.max(18, parent.height - y - 9)
                   text: codePackRow.copyText
                   color: "#ffffff"
                   font.family: "monospace"

@@ -122,11 +122,11 @@ Example:
 {
   "chi_dir": "/home/chiaki/Documents/chi",
   "backup": {
-    "host": "SERVER_HOST",
-    "user": "root",
+    "host": "backup.example.com",
+    "user": "backup-user",
     "port": 22,
     "identity_file": "~/.ssh/id_ed25519",
-    "remote_command": "/root/.local/bin/chi-backup-receive",
+    "remote_command": "/home/backup-user/.local/bin/chi-backup-receive",
     "keep": 20,
     "time": "09:30"
   },
@@ -172,17 +172,17 @@ md-hud backup-timer-remove
 Server setup:
 
 ```sh
-ssh root@SERVER_HOST 'mkdir -p ~/.local/bin ~/chi_reader_backups'
-scp server/chi-backup-receive root@SERVER_HOST:/root/.local/bin/chi-backup-receive
-ssh root@SERVER_HOST 'chmod 700 /root/.local/bin/chi-backup-receive'
+ssh backup-user@SERVER_HOST 'mkdir -p ~/.local/bin ~/chi_reader_backups'
+scp server/chi-backup-receive backup-user@SERVER_HOST:~/.local/bin/chi-backup-receive
+ssh backup-user@SERVER_HOST 'chmod 700 ~/.local/bin/chi-backup-receive'
 ```
 
 Client setup:
 
 ```sh
 md-hud config-set backup.host SERVER_HOST
-md-hud config-set backup.user root
-md-hud config-set backup.remote_command /root/.local/bin/chi-backup-receive
+md-hud config-set backup.user backup-user
+md-hud config-set backup.remote_command /home/backup-user/.local/bin/chi-backup-receive
 md-hud config-set backup.time 09:30
 ```
 

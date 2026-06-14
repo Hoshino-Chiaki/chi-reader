@@ -2,6 +2,10 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
+import "lib/Format.js" as Format
+import "lib/Layout.js" as Layout
+import "lib/Parser.js" as Parser
+import "lib/Sections.js" as Sections
 
 Scope {
   id: root
@@ -154,28 +158,11 @@ Scope {
   }
 
   function parseSections(text) {
-    const markers = [];
-    const source = String(text || "");
-    const lines = source.split(/\r?\n/);
-    let offset = 0;
+    const parsed = Sections.parseSections(text);
+    const nextRoots = parsed.roots || [];
+    const parseError = String(parsed.error || "");
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      let match = line.match(/^::(sec|sub|tri)\s+(.+?)\s*$/);
-      if (match) {
-        const markerType = String(match[1] || "");
-        const markerLevel = markerType === "sec" ? 1 : (markerType === "sub" ? 2 : 3);
-        markers.push({
-          "title": String(match[2]).trim() || "Section " + String(markers.length + 1),
-          "level": markerLevel,
-          "start": offset,
-          "contentStart": offset + line.length + 1
-        });
-      }
-      offset += line.length + 1;
-    }
-
-    if (markers.length === 0) {
+    if (nextRoots.length === 0 && parseError === "") {
       sections = [];
       sectionRoots = [];
       sectionParentIndex = -1;
@@ -183,59 +170,6 @@ Scope {
       selectedSectionIndex = 0;
       currentSectionIndex = -1;
       return;
-    }
-
-    const nextRoots = [];
-    let currentRoot = null;
-    let currentSub = null;
-    let parseError = "";
-
-    for (let i = 0; i < markers.length; i++) {
-      const contentEnd = i + 1 < markers.length ? markers[i + 1].start : text.length;
-      const rawText = text.slice(markers[i].contentStart, contentEnd);
-      const node = {
-        "title": markers[i].title,
-        "text": rawText.replace(/^\r?\n/, ""),
-        "children": []
-      };
-
-      if (markers[i].level === 1) {
-        currentRoot = node;
-        currentSub = null;
-        nextRoots.push(node);
-      } else if (markers[i].level === 2) {
-        if (!currentRoot) {
-          parseError = "::sub appears before any ::sec: " + markers[i].title;
-          break;
-        }
-        currentRoot.children.push(node);
-        currentSub = node;
-      } else {
-        if (!currentSub) {
-          parseError = "::tri appears before any ::sub: " + markers[i].title;
-          break;
-        }
-        currentSub.children.push(node);
-      }
-    }
-
-    if (parseError === "") {
-      function validateNode(node) {
-        if ((node.children || []).length > 0 && String(node.text || "").trim() !== "") {
-          return "目录结构错误: `" + node.title + "` 同时包含正文和子目录。一个目录下面要么只有子目录，要么直接就是正文。";
-        }
-        const children = node.children || [];
-        for (let i = 0; i < children.length; i++) {
-          const childError = validateNode(children[i]);
-          if (childError !== "") return childError;
-        }
-        return "";
-      }
-
-      for (let i = 0; i < nextRoots.length; i++) {
-        parseError = validateNode(nextRoots[i]);
-        if (parseError !== "") break;
-      }
     }
 
     if (parseError !== "") {
@@ -388,518 +322,26 @@ Scope {
     }
   }
 
-  function escapeHtml(value) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function renderInline(value) {
-    return escapeHtml(value)
-      .replace(/`([^`]+)`/g, "<span style=\"color:#ffffff; font-weight:700;\">$1</span>")
-      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
-  }
-
-  function renderTable(source) {
-    const rows = String(source).split(/\n/).map(line => line.trim()).filter(line => line.length > 0);
-    if (rows.length === 0) return "";
-
-    let html = "<table cellspacing=\"0\" cellpadding=\"4\" style=\"border-collapse:collapse;\">";
-    for (let r = 0; r < rows.length; r++) {
-      const cells = rows[r].split(/\t+| {2,}|\s+\|\s+|\|/).map(cell => cell.trim()).filter(cell => cell.length > 0);
-      if (cells.length === 0) continue;
-
-      html += "<tr>";
-      for (let c = 0; c < cells.length; c++) {
-        const tag = r === 0 ? "th" : "td";
-        html += "<" + tag + " style=\"border:1px solid rgba(255,255,255,0.28); color:#f7f4ec;\">" + renderInline(cells[c]) + "</" + tag + ">";
-      }
-      html += "</tr>";
-    }
-    html += "</table>";
-    return html;
-  }
-
-  function renderTextToHtml(source) {
-    const lines = String(source || "").split(/\n/);
-    let html = "";
-    let paragraph = [];
-    let inTable = false;
-    let tableLines = [];
-
-    function flushParagraph() {
-      if (paragraph.length === 0) return;
-      html += "<p style=\"margin:0 0 8px 0;\">" + renderInline(paragraph.join(" ")) + "</p>";
-      paragraph = [];
-    }
-
-    function flushTable() {
-      if (!inTable) return;
-      html += renderTable(tableLines.join("\n"));
-      tableLines = [];
-      inTable = false;
-    }
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      if (/^<t\d*\b/i.test(trimmed)) {
-        flushParagraph();
-        inTable = true;
-        const rest = trimmed.replace(/^<t\d*\s*/i, "").replace(/t>$/i, "");
-        if (rest.length > 0) tableLines.push(rest);
-        if (/t>$/i.test(trimmed)) flushTable();
-        continue;
-      }
-
-      if (inTable) {
-        if (/t>$/i.test(trimmed)) {
-          const rest = trimmed.replace(/t>$/i, "");
-          if (rest.length > 0) tableLines.push(rest);
-          flushTable();
-        } else {
-          tableLines.push(line);
-        }
-        continue;
-      }
-
-      if (trimmed.length === 0) {
-        flushParagraph();
-        continue;
-      }
-
-      if (/^-{11,}$/.test(trimmed)) {
-        flushParagraph();
-        html += "<hr style=\"border:0; border-top:1px solid rgba(255,255,255,0.42); margin:10px 0;\" />";
-        continue;
-      }
-
-      const titledDivider = trimmed.match(/^-{3,}\s*(.+?)\s*-{3,}$/);
-      if (titledDivider) {
-        flushParagraph();
-        html += "<p style=\"margin:10px 0 6px 0; color:#ffffff; font-weight:800;\">" + renderInline(titledDivider[1]) + "</p>";
-        continue;
-      }
-
-      if (/^#{1,4}\s+/.test(trimmed)) {
-        flushParagraph();
-        const level = Math.min(4, trimmed.match(/^#+/)[0].length);
-        const text = trimmed.replace(/^#{1,4}\s+/, "");
-        const size = level === 1 ? 20 : level === 2 ? 17 : 15;
-        html += "<p style=\"margin:8px 0 6px 0; font-size:" + size + "px; font-weight:800; color:#ffffff;\">" + renderInline(text) + "</p>";
-        continue;
-      }
-
-      if (/^[-*]\s+/.test(trimmed)) {
-        flushParagraph();
-        html += "<p style=\"margin:2px 0 2px 10px;\">• " + renderInline(trimmed.replace(/^[-*]\s+/, "")) + "</p>";
-        continue;
-      }
-
-      paragraph.push(trimmed);
-    }
-
-    flushParagraph();
-    flushTable();
-    return html;
-  }
-
-  function normalizeCodeBlock(value) {
-    let text = String(value || "");
-    text = text.replace(/^\r?\n/, "");
-    text = text.replace(/\r?\n$/, "");
-    return text;
-  }
-
-  function normalizeRuleBlock(value) {
-    let text = String(value || "");
-    text = text.replace(/^\r?\n/, "");
-    text = text.replace(/\r?\n$/, "");
-    return text.split(/\r?\n/);
-  }
-
-  function normalizeLines(lines) {
-    const output = [];
-    if (Array.isArray(lines)) {
-      for (let i = 0; i < lines.length; i++) output.push(String(lines[i] || ""));
-    } else if (lines && lines.length !== undefined) {
-      for (let i = 0; i < lines.length; i++) output.push(String(lines[i] || ""));
-    } else if (lines !== undefined && lines !== null) {
-      const parts = String(lines).split(/\r?\n/);
-      for (let i = 0; i < parts.length; i++) output.push(parts[i]);
-    }
-    return output;
-  }
-
-  function renderRuleLines(lines) {
-    const source = normalizeLines(lines);
-    return source.map(line => "* " + String(line)).join("\n");
-  }
-
-  function splitTableRow(line, columns) {
-    const count = Math.max(1, Math.min(6, Number(columns) || 1));
-    let cells = [];
-    const raw = String(line || "").trim();
-
-    if (raw.indexOf("\t") >= 0) {
-      cells = raw.split(/\t+/).map(cell => cell.trim());
-    } else {
-      const parts = raw.split(/\s+/).filter(part => part.length > 0);
-      for (let i = 0; i < count - 1 && i < parts.length; i++) cells.push(parts[i]);
-      cells.push(parts.slice(count - 1).join(" "));
-    }
-
-    while (cells.length < count) cells.push("");
-    if (cells.length > count) {
-      cells = cells.slice(0, count - 1).concat([cells.slice(count - 1).join(" ")]);
-    }
-    return cells;
-  }
-
-  function parseTableRows(lines, columns) {
-    const source = normalizeLines(lines);
-    const rows = [];
-    for (let i = 0; i < source.length; i++) {
-      if (String(source[i] || "").trim().length === 0) continue;
-      rows.push(splitTableRow(source[i], columns));
-    }
-    return rows;
-  }
-
-  function tableCellText(row, column) {
-    if (Array.isArray(row)) return String(row[column] || "");
-    if (row && row.length !== undefined) return String(row[column] || "");
-    return "";
-  }
-
-  function estimateWrappedLines(value, charsPerLine) {
-    const text = String(value || "");
-    if (text.length === 0) return 1;
-    return Math.max(1, Math.ceil(text.length / charsPerLine));
-  }
-
-  function estimateWrappedVisualLines(value, unitsPerLine) {
-    return Math.max(1, Math.ceil(visualTextUnits(value) / Math.max(1, unitsPerLine)));
-  }
-
-  function estimateRuleHeight(block) {
-    const lines = Array.isArray(block.lines) ? block.lines : [];
-    let wrappedLines = 0;
-    for (let i = 0; i < lines.length; i++) {
-      wrappedLines += estimateWrappedLines("* " + String(lines[i] || ""), 38);
-    }
-    return 58 + wrappedLines * 20;
-  }
-
-  function estimateTextHeight(block) {
-    const lines = String(block.text || "").split(/\r?\n/);
-    let wrappedLines = 0;
-    for (let i = 0; i < lines.length; i++) {
-      wrappedLines += estimateWrappedLines(lines[i], 44);
-    }
-    return Math.max(18, wrappedLines * 18);
-  }
-
-  function estimateCodeHeight(block) {
-    const wrappedLines = codeVisualLineCount(block.code || "", 42);
-    return Math.max(50, wrappedLines * 18 + (String(block.label || "").length > 0 ? 52 : 30));
-  }
-
-  function estimateCodePackHeight(block) {
-    const entries = codePackEntries(block);
-    return 26 + (String(block.title || "").length > 0 ? 26 : 0) + codePackRowsHeight(entries);
-  }
-
-  function codePackRowsHeight(entries) {
-    const source = entries && entries.length !== undefined ? entries : [];
-    let height = 0;
-    for (let i = 0; i < source.length; i++) {
-      height += codePackRowHeight(source[i]);
-      if (i < source.length - 1) height += 6;
-    }
-    return height;
-  }
-
-  function codeVisualLineCount(value, unitsPerLine) {
-    const lines = String(value || "").split(/\r?\n/);
-    let total = 0;
-    for (let i = 0; i < lines.length; i++) {
-      total += estimateWrappedVisualLines(lines[i], unitsPerLine);
-    }
-    return Math.max(1, total);
-  }
-
-  function codePackRowHeight(entry) {
-    const label = String(entry && entry.label || "");
-    const code = String(entry && entry.code || "");
-    const codeLines = codeVisualLineCount(code, 36);
-    return Math.max(54, codeLines * 18 + (label.length > 0 ? 39 : 28));
-  }
-
-  function codePackEntries(block) {
-    if (!block || !block.entries || block.entries.length === undefined) return [];
-    return block.entries;
-  }
-
-  function renderCodePackLines(entries) {
-    const source = entries && entries.length !== undefined ? entries : [];
-    const lines = [];
-    for (let i = 0; i < source.length; i++) {
-      const label = String(source[i] && source[i].label || "").trim();
-      const code = String(source[i] && source[i].code || "").trim();
-      if (label.length > 0) lines.push(label);
-      lines.push("  " + code);
-      if (i < source.length - 1) lines.push("");
-    }
-    return lines.join("\n");
-  }
-
-  function codePackCodeLineIndex(entries, rowIndex) {
-    const source = entries && entries.length !== undefined ? entries : [];
-    let lineIndex = 0;
-    const target = Math.max(0, Number(rowIndex || 0));
-    for (let i = 0; i < source.length && i < target; i++) {
-      const label = String(source[i] && source[i].label || "").trim();
-      if (label.length > 0) lineIndex += 1;
-      lineIndex += 1;
-      if (i < source.length - 1) lineIndex += 1;
-    }
-    const currentLabel = target < source.length
-      ? String(source[target] && source[target].label || "").trim()
-      : "";
-    if (currentLabel.length > 0) lineIndex += 1;
-    return lineIndex;
-  }
-
-  function visualTextUnits(value) {
-    const text = String(value || "");
-    let units = 0;
-    for (let i = 0; i < text.length; i++) {
-      units += text.charCodeAt(i) > 127 ? 2 : 1;
-    }
-    return Math.max(1, units);
-  }
-
-  function tableColumnUnits(rows, column) {
-    const source = rows && rows.length !== undefined ? rows : [];
-    let units = 1;
-    for (let i = 0; i < source.length; i++) {
-      units = Math.max(units, visualTextUnits(tableCellText(source[i], column)));
-    }
-    return units;
-  }
-
-  function tableColumnWidth(rows, columns, column, tableWidth) {
-    const count = Math.max(1, Math.min(6, Number(columns) || 1));
-    const width = Math.max(1, Number(tableWidth) || 1);
-    const minWidth = Math.min(88, width / count);
-    let totalUnits = 0;
-    for (let i = 0; i < count; i++) {
-      totalUnits += tableColumnUnits(rows, i);
-    }
-    const flexibleWidth = Math.max(1, width - minWidth * count);
-    const extra = flexibleWidth * tableColumnUnits(rows, column) / Math.max(1, totalUnits);
-    return Math.max(minWidth, minWidth + extra);
-  }
-
-  function tableRowHeight(row, rows, columns, tableWidth) {
-    const cells = normalizeLines(row);
-    let lines = 1;
-    for (let i = 0; i < cells.length; i++) {
-      const columnWidth = tableColumnWidth(rows, columns, i, tableWidth);
-      const unitsPerLine = Math.max(3, Math.floor(Math.max(30, columnWidth - 16) / 10));
-      lines = Math.max(lines, estimateWrappedVisualLines(cells[i], unitsPerLine));
-    }
-    return Math.max(58, lines * 24 + 36);
-  }
-
-  function estimateTableHeight(block) {
-    return tableBlockHeight(block, root.panelWidth - root.inputRailWidth - 24);
-  }
-
-  function tableBlockHeight(block, availableWidth) {
-    const rows = block.rows || [];
-    const tableContentWidth = Math.max(120, Number(availableWidth || 1) - 38);
-    const titleHeight = String(block.title || "").length > 0 ? 28 : 0;
-    return 90 + titleHeight + tableRowsHeight(rows, block.columns || 1, tableContentWidth);
-  }
-
-  function tableRowsHeight(rows, columns, tableWidth) {
-    const source = Array.isArray(rows) ? rows : normalizeLines(rows);
-    let height = 0;
-    for (let i = 0; i < source.length; i++) {
-      height += tableRowHeight(source[i], source, columns, tableWidth);
-    }
-    return height;
-  }
-
-  function estimateFlowHeight(block) {
-    const lines = normalizeLines(block.lines || []);
-    return 34 + (String(block.title || "").length > 0 ? 26 : 0) + Math.max(1, lines.length) * 18;
-  }
-
-  function estimateReaderHeight() {
-    let height = 14;
-    for (let i = 0; i < readerBlocks.length; i++) {
-      const block = readerBlocks[i] || {};
-      if (block.type === "rule") height += estimateRuleHeight(block);
-      else if (block.type === "table") height += estimateTableHeight(block);
-      else if (block.type === "flow") height += estimateFlowHeight(block);
-      else if (block.type === "codep") height += estimateCodePackHeight(block);
-      else if (block.type === "code") height += estimateCodeHeight(block);
-      else height += estimateTextHeight(block);
-      height += 8;
-    }
-    return height;
-  }
-
-  function renderChiBlocks(source) {
-    const blocks = [];
-    const text = String(source || "");
-    const lines = text.split(/\r?\n/);
-    let textLines = [];
-
-    function flushText() {
-      const literal = textLines.join("\n");
-      if (literal.length > 0) blocks.push({ "type": "text", "text": literal });
-      textLines = [];
-    }
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      let match = line.match(/^::table\s+(\d+)(?:\s+(.+?))?\s*$/);
-      if (match) {
-        flushText();
-        const columns = Math.max(1, Math.min(6, Number(match[1]) || 1));
-        const body = [];
-        i++;
-        while (i < lines.length && !/^::\s*$/.test(lines[i])) {
-          body.push(lines[i]);
-          i++;
-        }
-        blocks.push({
-          "type": "table",
-          "columns": columns,
-          "title": String(match[2] || "").trim(),
-          "rows": parseTableRows(body, columns)
-        });
-        continue;
-      }
-
-      match = line.match(/^::codep(?:\s+(.+?))?\s*$/);
-      if (match) {
-        flushText();
-        const body = [];
-        i++;
-        while (i < lines.length && !/^::\s*$/.test(lines[i])) {
-          body.push(lines[i]);
-          i++;
-        }
-        const pack = parseCodePack(body);
-        blocks.push({
-          "type": "codep",
-          "title": String(match[1] || "").trim(),
-          "entries": pack.entries,
-          "displayText": pack.displayText
-        });
-        continue;
-      }
-
-      match = line.match(/^::rule(?:\s+(.+?))?\s*$/);
-      if (match) {
-        flushText();
-        const body = [];
-        i++;
-        while (i < lines.length && !/^::\s*$/.test(lines[i])) {
-          body.push(lines[i]);
-          i++;
-        }
-        blocks.push({
-          "type": "rule",
-          "title": String(match[1] || "").trim(),
-          "lines": body
-        });
-        continue;
-      }
-
-      match = line.match(/^::flow(?:\s+(.+?))?\s*$/);
-      if (match) {
-        flushText();
-        const body = [];
-        i++;
-        while (i < lines.length && !/^::\s*$/.test(lines[i])) {
-          body.push(lines[i]);
-          i++;
-        }
-        blocks.push({
-          "type": "flow",
-          "title": String(match[1] || "").trim(),
-          "lines": body
-        });
-        continue;
-      }
-
-      match = line.match(/^::code(?:\s+(.+?))?\s*$/);
-      if (match) {
-        flushText();
-        const label = String(match[1] || "").trim();
-        const codeLines = [];
-        i++;
-        while (i < lines.length && !/^::\s*$/.test(lines[i])) {
-          codeLines.push(lines[i]);
-          i++;
-        }
-        blocks.push({
-          "type": "code",
-          "label": label,
-          "code": normalizeCodeBlock(codeLines.join("\n"))
-        });
-        continue;
-      }
-
-      textLines.push(line);
-    }
-
-    flushText();
-    return blocks;
-  }
-
-  function parseCodePack(lines) {
-    const source = normalizeLines(lines);
-    const entries = [];
-    const displayLines = [];
-    for (let i = 0; i < source.length; i++) {
-      const raw = String(source[i] || "").trim();
-      if (raw.length === 0) continue;
-
-      let label = "";
-      let code = raw;
-      const tabIndex = raw.indexOf("\t");
-      const parenMatch = raw.match(/^\(([^)]*)\)\s*(.+)$/);
-      const wideSpaceMatch = raw.match(/^(.+?)\s{2,}(.+)$/);
-      if (tabIndex >= 0) {
-        label = raw.slice(0, tabIndex).trim();
-        code = raw.slice(tabIndex + 1).trim();
-      } else if (parenMatch) {
-        label = parenMatch[1].trim();
-        code = parenMatch[2].trim();
-      } else if (wideSpaceMatch) {
-        label = wideSpaceMatch[1].trim();
-        code = wideSpaceMatch[2].trim();
-      }
-
-      if (code.length > 0) {
-        entries.push({ "label": label, "code": code });
-        if (label.length > 0) displayLines.push(label);
-        displayLines.push("  " + code);
-        if (i < source.length - 1) displayLines.push("");
-      }
-    }
-    return { "entries": entries, "displayText": displayLines.join("\n") };
-  }
+  function escapeHtml(value) { return Format.escapeHtml(value); }
+  function renderInline(value) { return Format.renderInline(value); }
+  function renderTextToHtml(source) { return Format.renderTextToHtml(source); }
+  function normalizeLines(lines) { return Parser.normalizeLines(lines); }
+  function renderRuleLines(lines) { return Parser.renderRuleLines(lines); }
+  function tableCellText(row, column) { return Layout.tableCellText(row, column); }
+  function estimateCodeHeight(block) { return Layout.estimateCodeHeight(block); }
+  function estimateCodePackHeight(block) { return Layout.estimateCodePackHeight(block); }
+  function codePackRowsHeight(entries) { return Layout.codePackRowsHeight(entries); }
+  function codePackRowHeight(entry) { return Layout.codePackRowHeight(entry); }
+  function codePackEntries(block) { return Parser.codePackEntries(block); }
+  function codePackCodeLineIndex(entries, rowIndex) { return Layout.codePackCodeLineIndex(entries, rowIndex); }
+  function tableColumnWidth(rows, columns, column, tableWidth) { return Layout.tableColumnWidth(rows, columns, column, tableWidth); }
+  function tableRowHeight(row, rows, columns, tableWidth) { return Layout.tableRowHeight(row, rows, columns, tableWidth); }
+  function estimateTableHeight(block) { return tableBlockHeight(block, root.panelWidth - root.inputRailWidth - 24); }
+  function tableBlockHeight(block, availableWidth) { return Layout.tableBlockHeight(block, availableWidth); }
+  function tableRowsHeight(rows, columns, tableWidth) { return Layout.tableRowsHeight(rows, columns, tableWidth); }
+  function estimateFlowHeight(block) { return Layout.estimateFlowHeight(block); }
+  function estimateReaderHeight() { return Layout.estimateReaderHeight(readerBlocks, root.panelWidth - root.inputRailWidth - 24); }
+  function renderChiBlocks(source) { return Parser.renderChiBlocks(source); }
 
   function copyTargetBlockIndex(target, fallback) {
     if (target && target.blockIndex !== undefined) return Number(target.blockIndex);
@@ -1432,12 +874,12 @@ Scope {
     Text {
       width: parent.width
       height: implicitHeight
-      text: block.text || ""
+      text: root.renderTextToHtml(block.text || "")
       color: root.primaryTextColor
       font.pixelSize: 14
       lineHeight: 1.18
       wrapMode: Text.Wrap
-      textFormat: Text.PlainText
+      textFormat: Text.RichText
       style: Text.Outline
       styleColor: root.textShadowColor
     }

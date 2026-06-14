@@ -226,6 +226,7 @@ Tiny example:
 ::tri 01.List
 
 # 一级标题
+#1. 编号一级标题
 ## 二级标题
 
 ::code 查看文件

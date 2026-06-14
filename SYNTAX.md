@@ -27,8 +27,8 @@ Total syntax rules: **15**
 
 | No. | Rule | Usage | Render |
 | --- | --- | --- | --- |
-| 09 | `# TITLE` | Level-1 text heading | Strongest bold heading. |
-| 10 | `## TITLE` | Level-2 text heading | Slightly lighter heading. |
+| 09 | `# TITLE` or `#TITLE` | Level-1 text heading | Strongest bold heading. |
+| 10 | `## TITLE` or `##TITLE` | Level-2 text heading | Slightly lighter heading. |
 | 11 | `` `text` `` | Inline code emphasis | Bright bold inline text. |
 | 12 | `**text**` | Bold emphasis | Bold inline text. |
 | 13 | `- item` or `* item` | Bullet line | Rendered as a compact bullet paragraph. |
@@ -141,7 +141,9 @@ Use for process diagrams and relationship charts.
 
 ```text
 # 一级标题
+#1. 编号一级标题
 ## 二级标题
+##02. 编号二级标题
 
 Use `pacman -Syu` before upgrading.
 **Do not paste commands you do not understand.**

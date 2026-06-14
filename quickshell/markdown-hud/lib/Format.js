@@ -96,10 +96,11 @@ function renderTextToHtml(source) {
       continue;
     }
 
-    if (/^#{1,4}\s+/.test(trimmed)) {
+    const heading = trimmed.match(/^(#{1,4})\s*(.+)$/);
+    if (heading) {
       flushParagraph();
-      const level = Math.min(4, trimmed.match(/^#+/)[0].length);
-      const text = trimmed.replace(/^#{1,4}\s+/, "");
+      const level = Math.min(4, heading[1].length);
+      const text = heading[2].trim();
       const size = level === 1 ? 21 : level === 2 ? 17 : 15;
       const weight = level === 1 ? 900 : level === 2 ? 760 : 700;
       html += "<p style=\"margin:8px 0 6px 0; font-size:" + size + "px; font-weight:" + weight + "; color:#ffffff;\">" + renderInline(text) + "</p>";
